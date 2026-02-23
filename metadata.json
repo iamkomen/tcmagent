@@ -1,0 +1,5 @@
+{
+  "name": "TCM Master Agent Builder",
+  "description": "Extracts knowledge from traditional Chinese medicine texts to build highly specific, rule-based diagnostic agents.",
+  "requestFramePermissions": []
+}
