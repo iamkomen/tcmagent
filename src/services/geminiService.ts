@@ -11,6 +11,7 @@ const getAi = () => {
 export interface ExtractedKnowledge {
   diseaseClassifications: string[];
   symptomMappings: {
+    disease: string;
     symptoms: string[];
     tongue: string;
     pulse: string;
@@ -18,8 +19,10 @@ export interface ExtractedKnowledge {
     treatmentPrinciple: string;
     prescription: string;
     modifications: string[];
+    associatedThoughts: string[];
   }[];
   masterThoughts: string[];
+  hasMoreContent?: boolean;
 }
 
 export const extractKnowledgeFromDocument = async (
@@ -35,9 +38,13 @@ export const extractKnowledgeFromDocument = async (
     Extract the following structured knowledge.
     
     CRITICAL INSTRUCTION: To prevent output truncation, you MUST extract only a BATCH of information in this turn:
-    1. Disease Classifications: Extract up to 15 disease classifications.
-    2. Symptom Mappings: Extract up to 10 detailed mappings of symptoms, tongue appearance, pulse, the corresponding syndrome (证型), treatment principle (治法), base prescription (方剂), and specific modifications based on symptoms (加减).
-    3. Master's Thoughts: Extract up to 10 unique diagnostic thoughts, principles, or rules from this specific master.
+    1. Disease Classifications: Extract up to 15 disease classifications (e.g., 外感发热, 脾胃病).
+    2. Master's Thoughts: Extract up to 10 unique diagnostic thoughts, principles, or rules from this specific master.
+    3. Symptom Mappings: Extract up to 10 detailed mappings. FOR EACH MAPPING, you MUST establish clear relationships:
+       - "disease": Specify which disease from the 'Disease Classifications' this mapping belongs to.
+       - "associatedThoughts": Provide an array of strings referencing the 'Master's Thoughts' that apply to this specific mapping.
+       - Include symptoms, tongue appearance, pulse, the corresponding syndrome (证型), treatment principle (治法), base prescription (方剂), and specific modifications based on symptoms (加减).
+    4. hasMoreContent: A boolean flag. Set to true if there is STILL MORE relevant TCM knowledge in the document that you haven't extracted yet due to the batch limit. Set to false if you have extracted ALL relevant knowledge from the document.
     
     Return the output strictly as JSON matching the requested schema. Ensure the extracted data is highly detailed and specific to the text provided, not just generic TCM knowledge.
   `;
@@ -52,7 +59,7 @@ export const extractKnowledgeFromDocument = async (
     Previously Extracted Symptom Mappings (Syndromes): ${JSON.stringify(previousKnowledge.symptomMappings.map(m => m.syndrome))}
     Previously Extracted Master's Thoughts: ${JSON.stringify(previousKnowledge.masterThoughts)}
     
-    Extract a NEW BATCH of up to 15 disease classifications, 10 symptom mappings, and 10 master's thoughts from the document that haven't been covered yet.
+    Extract a NEW BATCH of up to 15 disease classifications, 10 symptom mappings, and 10 master's thoughts from the document that haven't been covered yet. Ensure the new symptom mappings clearly link to either new or previously extracted diseases and thoughts.
     `;
   }
 
@@ -85,6 +92,7 @@ export const extractKnowledgeFromDocument = async (
             items: {
               type: Type.OBJECT,
               properties: {
+                disease: { type: Type.STRING },
                 symptoms: {
                   type: Type.ARRAY,
                   items: { type: Type.STRING },
@@ -98,16 +106,23 @@ export const extractKnowledgeFromDocument = async (
                   type: Type.ARRAY,
                   items: { type: Type.STRING },
                 },
+                associatedThoughts: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
               },
-              required: ["symptoms", "tongue", "pulse", "syndrome", "treatmentPrinciple", "prescription", "modifications"],
+              required: ["disease", "symptoms", "tongue", "pulse", "syndrome", "treatmentPrinciple", "prescription", "modifications", "associatedThoughts"],
             },
           },
           masterThoughts: {
             type: Type.ARRAY,
             items: { type: Type.STRING },
           },
+          hasMoreContent: {
+            type: Type.BOOLEAN,
+          },
         },
-        required: ["diseaseClassifications", "symptomMappings", "masterThoughts"],
+        required: ["diseaseClassifications", "symptomMappings", "masterThoughts", "hasMoreContent"],
       },
     },
   });
@@ -138,7 +153,19 @@ export const extractKnowledgeFromDocument = async (
       diseaseClassifications: Array.isArray(parsed.diseaseClassifications) ? parsed.diseaseClassifications.filter(Boolean) : [],
       symptomMappings: Array.isArray(parsed.symptomMappings) ? parsed.symptomMappings.filter(Boolean) : [],
       masterThoughts: Array.isArray(parsed.masterThoughts) ? parsed.masterThoughts.filter(Boolean) : [],
+      hasMoreContent: parsed.hasMoreContent ?? false,
     };
+
+    if (newKnowledge.diseaseClassifications.length === 0 && newKnowledge.symptomMappings.length === 0 && newKnowledge.masterThoughts.length === 0) {
+      if (previousKnowledge) {
+        return {
+          ...previousKnowledge,
+          hasMoreContent: false
+        };
+      } else {
+        throw new Error("未能从文档中提取到有效的中医知识。可能是文档内容不包含相关信息，或者模型无法解析该内容。");
+      }
+    }
 
     if (previousKnowledge) {
       // Merge new knowledge with previous knowledge
@@ -146,11 +173,15 @@ export const extractKnowledgeFromDocument = async (
         diseaseClassifications: Array.from(new Set([...(previousKnowledge.diseaseClassifications || []), ...newKnowledge.diseaseClassifications])),
         symptomMappings: [...(previousKnowledge.symptomMappings || []), ...newKnowledge.symptomMappings],
         masterThoughts: Array.from(new Set([...(previousKnowledge.masterThoughts || []), ...newKnowledge.masterThoughts])),
+        hasMoreContent: newKnowledge.hasMoreContent,
       };
     }
 
     return newKnowledge;
-  } catch (e) {
+  } catch (e: any) {
+    if (e.message.includes("未能从文档中提取")) {
+      throw e;
+    }
     console.error("Failed to parse JSON:", text);
     throw new Error("解析提取的知识失败。文档可能过于复杂，或者单次提取量过大导致响应被截断。");
   }
@@ -158,9 +189,7 @@ export const extractKnowledgeFromDocument = async (
 
 export const diagnoseWithAgent = async (
   knowledge: ExtractedKnowledge,
-  patientSymptoms: string,
-  patientTongue: string,
-  patientPulse: string
+  patientCase: string
 ): Promise<string> => {
   const ai = getAi();
   
@@ -176,7 +205,7 @@ export const diagnoseWithAgent = async (
     
     Format your response as follows using Markdown:
     ### 1. 辨证过程 (Diagnostic Process)
-    Explain the reasoning based on the symptoms, tongue, and pulse, mapping them to the knowledge base.
+    Explain the reasoning based on the patient's case, mapping their symptoms, tongue, and pulse to the knowledge base.
     
     ### 2. 建议方案 (Suggested Plan)
     State the treatment principle (治法), base prescription (方剂), and specific modifications (加减).
@@ -186,9 +215,8 @@ export const diagnoseWithAgent = async (
   `;
 
   const prompt = `
-    患者症状 (Patient Symptoms): ${patientSymptoms}
-    患者舌象 (Patient Tongue): ${patientTongue}
-    患者脉象 (Patient Pulse): ${patientPulse}
+    患者病案/描述 (Patient Case/Description): 
+    ${patientCase}
     
     请基于泰斗的知识库提供诊疗方案。 (Please provide a diagnosis and prescription based on the master's knowledge.)
   `;

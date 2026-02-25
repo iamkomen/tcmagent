@@ -1,10 +1,11 @@
-import { useState, useRef } from "react";
-import { UploadCloud, FileText, CheckCircle2, Loader2, Database, BrainCircuit, File as FileIcon, Download, Plus } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { UploadCloud, FileText, CheckCircle2, Loader2, Database, BrainCircuit, File as FileIcon, Download, Plus, Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { extractKnowledgeFromDocument, ExtractedKnowledge } from "@/services/geminiService";
 import { MasterAgent } from "@/types";
 import * as mammoth from "mammoth";
 import { CurrentDoc } from "@/App";
+import { KnowledgeViewerModal } from "./KnowledgeViewerModal";
 
 interface KnowledgeExtractorProps {
   onKnowledgeExtracted: (knowledge: ExtractedKnowledge) => void;
@@ -19,9 +20,16 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
   const [isContinuingExtraction, setIsContinuingExtraction] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isViewerOpen, setIsViewerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const knowledge = master.knowledge;
+
+  // Clear selected file when switching masters
+  useEffect(() => {
+    setSelectedFile(null);
+    setError(null);
+  }, [master.id]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -51,7 +59,11 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
     let mimeType = "";
     let docName = "";
 
-    if (selectedFile) {
+    if (isContinuing && currentDoc) {
+      base64String = currentDoc.base64;
+      mimeType = currentDoc.mimeType;
+      docName = currentDoc.name;
+    } else if (selectedFile) {
       if (selectedFile.size > 15 * 1024 * 1024) {
         setError("文件过大，请上传小于 15MB 的文件。");
         return;
@@ -74,17 +86,24 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
             reader.onerror = () => reject(new Error("读取文件失败。"));
           });
           
-          const result = await mammoth.extractRawText({ arrayBuffer });
+          const extractRawText = mammoth.extractRawText || (mammoth as any).default?.extractRawText;
+          if (!extractRawText) {
+            throw new Error("无法加载 DOCX 解析库。");
+          }
+          const result = await extractRawText({ arrayBuffer });
           const text = result.value;
           
-          // Encode UTF-8 text to base64
-          const encoder = new TextEncoder();
-          const uint8Array = encoder.encode(text);
-          let binary = '';
-          for (let i = 0; i < uint8Array.length; i++) {
-            binary += String.fromCharCode(uint8Array[i]);
-          }
-          base64String = btoa(binary);
+          // Use FileReader to efficiently encode large text to base64
+          const blob = new Blob([text], { type: 'text/plain' });
+          base64String = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(blob);
+            reader.onload = () => {
+              const res = reader.result as string;
+              resolve(res.split(",")[1]);
+            };
+            reader.onerror = () => reject(new Error("Base64 编码失败。"));
+          });
           mimeType = 'text/plain';
         } else {
           base64String = await new Promise<string>((resolve, reject) => {
@@ -110,11 +129,8 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
       }
 
       docName = selectedFile.name;
-    } else if (isContinuing && currentDoc) {
-      base64String = currentDoc.base64;
-      mimeType = currentDoc.mimeType;
-      docName = currentDoc.name;
     } else {
+      setError("请先选择要上传的文件。");
       return;
     }
 
@@ -142,13 +158,22 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
 
   const handleExport = () => {
     if (!knowledge) return;
-    const blob = new Blob([JSON.stringify(knowledge, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${master.name.replace(/\s+/g, '-').toLowerCase()}-agent.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const blob = new Blob([JSON.stringify(knowledge, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${master.name.replace(/\s+/g, '-').toLowerCase()}-agent.json`;
+      // Append to body to ensure click works in all browsers/iframes
+      document.body.appendChild(a);
+      a.click();
+      // Clean up
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Export failed:", err);
+      setError("导出失败，请重试。");
+    }
   };
 
   return (
@@ -159,15 +184,32 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
           <p className="text-stone-500 text-sm md:text-base">为<strong className="text-stone-800">【{master.name}】</strong>提取并构建核心诊疗逻辑。</p>
         </div>
         {knowledge && (
-          <button 
-            onClick={handleExport} 
-            className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 md:px-5 md:py-2.5 rounded-xl hover:bg-emerald-700 transition-colors text-sm font-medium shadow-sm w-full sm:w-auto justify-center"
-          >
-            <Download size={18} />
-            导出智能体 (JSON)
-          </button>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button 
+              onClick={() => setIsViewerOpen(true)} 
+              className="flex-1 sm:flex-none flex items-center gap-2 bg-white border border-stone-200 text-stone-700 px-4 py-2 md:px-5 md:py-2.5 rounded-xl hover:bg-stone-50 transition-colors text-sm font-medium shadow-sm justify-center"
+            >
+              <Eye size={18} />
+              查看完整知识库
+            </button>
+            <button 
+              onClick={handleExport} 
+              className="flex-1 sm:flex-none flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 md:px-5 md:py-2.5 rounded-xl hover:bg-emerald-700 transition-colors text-sm font-medium shadow-sm justify-center"
+            >
+              <Download size={18} />
+              导出智能体 (JSON)
+            </button>
+          </div>
         )}
       </div>
+
+      {isViewerOpen && knowledge && (
+        <KnowledgeViewerModal 
+          knowledge={knowledge} 
+          masterName={master.name} 
+          onClose={() => setIsViewerOpen(false)} 
+        />
+      )}
 
       {knowledge && !isExtracting && !selectedFile && (
         <div className="space-y-6 mb-12">
@@ -181,7 +223,7 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
             </div>
           </div>
 
-          {currentDoc && (
+          {currentDoc && knowledge.hasMoreContent !== false && (
             <div className="bg-white border border-stone-200 rounded-2xl p-6 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
                 <h4 className="font-medium text-stone-900 flex items-center gap-2">
@@ -191,13 +233,40 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
                 <p className="text-sm text-stone-500 mt-1">当前文档：<span className="font-medium text-stone-700">{currentDoc.name}</span></p>
                 <p className="text-xs text-stone-400 mt-1">由于单次提取数量有限（防止超时），您可以点击右侧按钮继续提取文档中的剩余医案。</p>
               </div>
-              <button
-                onClick={() => handleGenerateAgent(true)}
-                className="shrink-0 bg-stone-900 hover:bg-stone-800 text-white px-5 py-2.5 rounded-xl transition-colors flex items-center gap-2 text-sm font-medium"
-              >
-                <BrainCircuit size={16} />
-                继续提取剩余内容
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleGenerateAgent(true)}
+                  className="shrink-0 bg-stone-900 hover:bg-stone-800 text-white px-5 py-2.5 rounded-xl transition-colors flex items-center gap-2 text-sm font-medium"
+                >
+                  <BrainCircuit size={16} />
+                  继续提取剩余内容
+                </button>
+                <button
+                  onClick={() => setCurrentDoc(null)}
+                  className="shrink-0 bg-stone-100 hover:bg-stone-200 text-stone-600 px-4 py-2.5 rounded-xl transition-colors text-sm font-medium"
+                  title="清除当前文档缓存"
+                >
+                  清除
+                </button>
+              </div>
+            </div>
+          )}
+
+          {currentDoc && knowledge.hasMoreContent === false && (
+            <div className="bg-stone-50 border border-stone-200 rounded-2xl p-6 shadow-sm flex items-start gap-4">
+              <div className="bg-stone-200 p-2 rounded-full text-stone-600 mt-1">
+                <CheckCircle2 size={24} />
+              </div>
+              <div className="flex-1">
+                <h4 className="font-medium text-stone-900">当前文档已提取完毕</h4>
+                <p className="text-sm text-stone-500 mt-1">文档 <span className="font-medium text-stone-700">{currentDoc.name}</span> 中的所有有效中医知识均已提取并融合到知识库中。</p>
+                <button
+                  onClick={() => setCurrentDoc(null)}
+                  className="mt-3 bg-white border border-stone-200 hover:bg-stone-100 text-stone-600 px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+                >
+                  上传新文档
+                </button>
+              </div>
             </div>
           )}
 
@@ -231,6 +300,7 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
               {knowledge.symptomMappings && knowledge.symptomMappings.length > 0 ? (
                 <div className="bg-stone-50 p-4 rounded-xl text-xs font-mono text-stone-600 overflow-y-auto flex-1">
                   <div className="space-y-2">
+                    <p><span className="text-emerald-600 font-semibold">所属疾病：</span> {knowledge.symptomMappings[0].disease || "未分类"}</p>
                     <p><span className="text-emerald-600 font-semibold">症状：</span> {knowledge.symptomMappings[0].symptoms?.join(", ") || "N/A"}</p>
                     <p><span className="text-emerald-600 font-semibold">舌象：</span> {knowledge.symptomMappings[0].tongue || "N/A"}</p>
                     <p><span className="text-emerald-600 font-semibold">脉象：</span> {knowledge.symptomMappings[0].pulse || "N/A"}</p>
@@ -243,6 +313,12 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
                         <li key={i}>{mod}</li>
                       ))}
                     </ul>
+                    {knowledge.symptomMappings[0].associatedThoughts && knowledge.symptomMappings[0].associatedThoughts.length > 0 && (
+                      <p className="mt-2 pt-2 border-t border-stone-200/60">
+                        <span className="text-emerald-600 font-semibold">关联心法：</span> 
+                        {knowledge.symptomMappings[0].associatedThoughts[0].substring(0, 30)}...
+                      </p>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -274,6 +350,7 @@ export function KnowledgeExtractor({ onKnowledgeExtracted, master, currentDoc, s
               className="hidden"
               accept=".pdf,.txt,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               onChange={handleFileChange}
+              onClick={(e) => e.stopPropagation()}
             />
             <div className="bg-white w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm border border-stone-100">
               <UploadCloud className="text-emerald-600" size={28} />

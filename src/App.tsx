@@ -83,6 +83,31 @@ export default function App() {
     setIsMobileMenuOpen(false);
   };
 
+  const handleDeleteMaster = (idToDelete: string) => {
+    if (masters.length === 1) {
+      alert("必须保留至少一个泰斗。");
+      return;
+    }
+    if (confirm("确定要删除这个泰斗及其所有知识库吗？此操作不可恢复。")) {
+      setMasters(prev => prev.filter(m => m.id !== idToDelete));
+      if (currentMasterId === idToDelete) {
+        const remaining = masters.filter(m => m.id !== idToDelete);
+        setCurrentMasterId(remaining[0].id);
+      }
+      // Also clean up currentDocs
+      setCurrentDocs(prev => {
+        const next = { ...prev };
+        delete next[idToDelete];
+        set("tcm-current-docs", next).catch(console.error);
+        return next;
+      });
+    }
+  };
+
+  const handleRenameMaster = (idToRename: string, newName: string) => {
+    setMasters(prev => prev.map(m => m.id === idToRename ? { ...m, name: newName } : m));
+  };
+
   const handleMergeMasters = () => {
     const validMasters = masters.filter(m => m.knowledge !== null);
     if (validMasters.length < 2) {
@@ -154,6 +179,8 @@ export default function App() {
             setIsMobileMenuOpen(false);
           }}
           onCreateMaster={handleCreateMaster}
+          onDeleteMaster={handleDeleteMaster}
+          onRenameMaster={handleRenameMaster}
           onMergeMasters={handleMergeMasters}
         />
       </div>

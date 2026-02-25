@@ -1,4 +1,5 @@
-import { BookOpen, Stethoscope, User, Plus, Combine, Database } from "lucide-react";
+import { useState } from "react";
+import { BookOpen, Stethoscope, User, Plus, Combine, Database, Trash2, Edit2, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MasterAgent } from "@/types";
 
@@ -9,6 +10,8 @@ interface SidebarProps {
   currentMasterId: string;
   setCurrentMasterId: (id: string) => void;
   onCreateMaster: () => void;
+  onDeleteMaster: (id: string) => void;
+  onRenameMaster: (id: string, newName: string) => void;
   onMergeMasters: () => void;
 }
 
@@ -19,8 +22,32 @@ export function Sidebar({
   currentMasterId, 
   setCurrentMasterId, 
   onCreateMaster, 
+  onDeleteMaster,
+  onRenameMaster,
   onMergeMasters 
 }: SidebarProps) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+
+  const startEditing = (master: MasterAgent, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingId(master.id);
+    setEditName(master.name);
+  };
+
+  const saveEdit = (id: string, e?: React.MouseEvent | React.FormEvent) => {
+    e?.stopPropagation();
+    if (editName.trim()) {
+      onRenameMaster(id, editName.trim());
+    }
+    setEditingId(null);
+  };
+
+  const cancelEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingId(null);
+  };
+
   return (
     <div className="w-64 bg-stone-900 text-stone-300 flex flex-col h-full border-r border-stone-800">
       <div className="p-6 border-b border-stone-800 flex items-center gap-3">
@@ -45,21 +72,65 @@ export function Sidebar({
         </div>
         <div className="space-y-1 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
           {masters.map(master => (
-            <button
+            <div
               key={master.id}
-              onClick={() => setCurrentMasterId(master.id)}
               className={cn(
-                "w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors text-sm",
+                "w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors text-sm group",
                 currentMasterId === master.id
                   ? "bg-stone-800 text-stone-100"
                   : "hover:bg-stone-800/50 hover:text-stone-200"
               )}
             >
-              <span className="truncate">{master.name}</span>
-              {master.knowledge && (
-                <Database size={12} className="text-emerald-500 flex-shrink-0" />
+              {editingId === master.id ? (
+                <form 
+                  onSubmit={(e) => saveEdit(master.id, e)}
+                  className="flex-1 flex items-center gap-1"
+                >
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="flex-1 bg-stone-700 text-white px-2 py-1 rounded text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <button type="submit" className="text-emerald-400 hover:text-emerald-300 p-1"><Check size={14} /></button>
+                  <button type="button" onClick={cancelEdit} className="text-stone-400 hover:text-stone-300 p-1"><X size={14} /></button>
+                </form>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setCurrentMasterId(master.id)}
+                    className="flex-1 text-left truncate flex items-center gap-2"
+                  >
+                    <span className="truncate">{master.name}</span>
+                    {master.knowledge && (
+                      <Database size={12} className="text-emerald-500 flex-shrink-0" />
+                    )}
+                  </button>
+                  <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={(e) => startEditing(master, e)}
+                      className="text-stone-500 hover:text-emerald-400 p-1"
+                      title="重命名"
+                    >
+                      <Edit2 size={14} />
+                    </button>
+                    {masters.length > 1 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteMaster(master.id);
+                        }}
+                        className="text-stone-500 hover:text-red-400 p-1"
+                        title="删除泰斗"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                </>
               )}
-            </button>
+            </div>
           ))}
         </div>
         
